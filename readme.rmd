@@ -1,1 +1,1 @@
-test
+This repository contains all the code used in the paper: : Ancient Host-Associated Microbes obtained from Mammoth Remains
