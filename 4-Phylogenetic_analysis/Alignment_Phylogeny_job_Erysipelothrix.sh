@@ -6,12 +6,14 @@ module load singularity
 module load bowtie2
 module load angsd
 
-
-Sp_name="Erysipelothrix"
+Sp_name="Erysipelothrix_mapq30_ALL"
 output_main_dir="/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/${Sp_name}"
+
 
 mkdir -p ${output_main_dir}
 cd ${output_main_dir}
+
+# first download the assemblies python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Download_NCBI_assemblies.py -t List_assemblies.txt -o .
 
 list_modern_genomes="/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Script_pannacota/${Sp_name}_assemblies.txt"
 cp  ${list_modern_genomes} .
@@ -24,13 +26,13 @@ singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN:/mnt ${p
 cat 2-res-prokka/Proteins/* >> 2-res-prokka/Proteins/GENO3.All.prt
 
 # Create the pangenome
-singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN:/mnt /${panacota} PanACoTA pangenome -l ${Sp_name}_assemblies.txt -d 2-res-prokka/Proteins  -i 0.8  -o 3-pangenome -n GENO3 --threads 30
+singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN:/mnt /${panacota} PanACoTA pangenome -l ${Sp_name}_assemblies.txt -d 2-res-prokka/Proteins  -i 0.7  -o 3-pangenome -n GENO3 --threads 30
 
 # Create the core and persistent genome
-singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN:/mnt ${panacota} PanACoTA corepers -p 3-pangenome/PanGenome-GENO3.All.prt-clust-0.8-mode1-th30.lst -o 4-corepers  -t 0.5
-
+singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN:/mnt ${panacota} PanACoTA corepers -p 3-pangenome/PanGenome-GENO3.All.prt-clust-0.7-mode1-th30.lst -o 4-corepers  -t 0.3
+#The persistent genome contains 1551 families, each one having exactly 1 member from at least 30.0% of the 21 different genomes (that is 7 genomes). The other genomes are absent from the family.
 # Align the genomes to the core and persistent genome
-singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN:/mnt ${panacota} PanACoTA align -c 4-corepers/PersGenome_PanGenome-GENO3.All.prt-clust-0.8-mode1-th30.lst-all_0.5.lst -l 2-res-prokka/LSTINFO-${Sp_name}_assemblies.lst  -n GENO3_1 -d 2-res-prokka -o 5-align --threads 20
+singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN:/mnt ${panacota} PanACoTA align -c 4-corepers/PersGenome_PanGenome-GENO3.All.prt-clust-0.7-mode1-th30.lst-all_0.3.lst -l 2-res-prokka/LSTINFO-${Sp_name}_assemblies.lst  -n GENO3_1 -d 2-res-prokka -o 5-align --threads 20
 
 # mapp the reads against the closest reference genome 
 
@@ -49,6 +51,8 @@ for file in $input_pattern; do
     echo "Extracted sequences saved to: $output_file"
 done
 
+#  remove if exist
+rm -f 5-align/All_mapped_reads/
 mkdir 5-align/All_mapped_reads
 
 fastq_files=(
@@ -62,6 +66,8 @@ fastq_files=(
 )
 
 output_dir="5-align/All_mapped_reads"
+output_dir2="5-align/Align-GENO3_1"
+
 
 for file in ${output_main_dir}/5-align/Align-GENO3_1/Isolated_GENO3_1-mafft-prt2nuc.*.aln; do
     echo "Processing file: $file"
@@ -73,10 +79,10 @@ for file in ${output_main_dir}/5-align/Align-GENO3_1/Isolated_GENO3_1-mafft-prt2
 
     # Create symbolic links for each fastq file
     for fastq_file in "${fastq_files[@]}"; do
-        ln -s "$fastq_file" .
+        ln -sf "$fastq_file" .
     done
 
-    threads_MAP_READS=16
+    threads_MAP_READS=4
 
     # Build Bowtie2 index
     bowtie2-build --quiet --threads $threads_MAP_READS -f "$ref_genome" "$ref_genome_built"
@@ -87,24 +93,38 @@ for file in ${output_main_dir}/5-align/Align-GENO3_1/Isolated_GENO3_1-mafft-prt2
         bam_filename="${fastq_basename%.fastq.gz}_vs_${ref_genome_built}"
 
         bowtie2 --very-sensitive --threads $threads_MAP_READS -x "$ref_genome_built" -U "$fastq_basename" | \
-            samtools view --verbosity 0 -b -F 4 -q 25 -@ $threads_MAP_READS | \
+            samtools view --verbosity 0 -b -F 4 -q 30 -@ $threads_MAP_READS | \
             samtools sort --verbosity 0 -@ $threads_MAP_READS -O bam -o "${bam_filename}.bam"
+
+        python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Filter_edit_reads_bam.py "${bam_filename}.bam" "${bam_filename}_edit0-2.bam"
 
         echo "Sorting..."
         samtools sort -@ $threads_MAP_READS -O bam -o "${bam_filename}_sorted.bam" "${bam_filename}.bam"
+        samtools sort -@ $threads_MAP_READS -O bam -o "${bam_filename}_sorted_edit0-2.bam" "${bam_filename}_edit0-2.bam"
         
         echo "Indexing..."
         samtools index -@ $threads_MAP_READS "${bam_filename}_sorted.bam"
+        samtools index -@ $threads_MAP_READS "${bam_filename}_sorted_edit0-2.bam"
     
-        angsd -doFasta 2 -doCounts 1 -minInd 1 -minMapQ 25 -i "${bam_filename}_sorted.bam" -out "${bam_filename}_sorted_for_phylogeny"
+        angsd -doFasta 2 -doCounts 1 -minInd 1 -minMapQ 30 -i "${bam_filename}_sorted.bam" -out "${bam_filename}_sorted_for_phylogeny"
+        angsd -doFasta 2 -doCounts 1 -minMapQ 30 -minInd 1 -setMinDepth 2 -i "${bam_filename}_sorted_edit0-2.bam" -out "${bam_filename}_sorted_for_phylogeny_edit0-2_minDepth2"
         gunzip "${bam_filename}_sorted_for_phylogeny.fa.gz" --force
+        gunzip "${bam_filename}_sorted_for_phylogeny_edit0-2_minDepth2.fa.gz" --force
         
+
         new_name=$(basename "$fastq_basename" .fastq.gz)
         sed -i "1s/.*/>${new_name}/" "${bam_filename}_sorted_for_phylogeny.fa"
+        sed -i "1s/.*/>${new_name}/" "${bam_filename}_sorted_for_phylogeny_edit0-2_minDepth2.fa"
     done
     
     new_file="${file/Isolated_/}"
     cat_file="${file/Isolated_/ALL_cat_}"
+    cat_file_edit0_2_minDepth2="${file/Isolated_/ALL_cat_edit0-2_minDepth2_}"
+    # remove if file already exists
+    rm -f "$cat_file"
+    rm -f "$cat_file_edit0_2_minDepth2"
+    rm {$output_dir2}*Isolated*
+    rm $output_dir2/ALL_cat_*
 
     passed="NO"
 
@@ -115,7 +135,9 @@ for file in ${output_main_dir}/5-align/Align-GENO3_1/Isolated_GENO3_1-mafft-prt2
         if [  -s "${bam_filename}_sorted_for_phylogeny.fa" ]; then
             passed="YES"
             sed -i "s/GEN1/${fastq_basename%.fastq.gz}/g" "${bam_filename}_sorted_for_phylogeny.fa"
-            cat "${bam_filename}_sorted_for_phylogeny.fa" >> "${cat_file}"
+            sed -i "s/GEN1/${fastq_basename%.fastq.gz}/g" "${bam_filename}_sorted_for_phylogeny_edit0-2_minDepth2.fa"
+            cat echo "${bam_filename}_sorted_for_phylogeny.fa" >> "${cat_file}"
+            cat "${bam_filename}_sorted_for_phylogeny_edit0-2_minDepth2.fa" >> "${cat_file_edit0_2_minDepth2}"
             echo "Done."
         else
             echo "Skipped: ${bam_filename}_sorted_for_phylogeny.fa is empty."
@@ -124,10 +146,12 @@ for file in ${output_main_dir}/5-align/Align-GENO3_1/Isolated_GENO3_1-mafft-prt2
 
     if [ "$passed" == "YES" ]; then
         cat "$new_file" >> "$cat_file"
+        cat "$new_file" >> "$cat_file_edit0_2_minDepth2"
     fi
 
     echo "Done processing file: $file"
 done
+
 
 rm *.bt2
 find .r -type f -name "*.bam" ! -name "*_sorted.bam" -exec rm {} +
@@ -139,14 +163,15 @@ mkdir 6-phylogeny
 
 cd 6-phylogeny
 
-python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py ${output_main_dir}/5-align/Align-GENO3_1/ ${output_main_dir}/6-phylogeny/All_partitions_merged_filtred.aln\
- ${output_main_dir}/6-phylogeny/All_partitions_merged_filtred.part\
-  --species_pair  sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted --tag ALL_cat_
-python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py ${output_main_dir}/5-align/Align-GENO3_1/ ${output_main_dir}/6-phylogeny/All_partitions_merged.aln ${output_main_dir}/6-phylogeny/All_partitions_merged.part --tag ALL_cat_
 
-python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py ${output_main_dir}/5-align/Align-GENO3_1/ ${output_main_dir}/6-phylogeny/All_partitions_merged_filtred_full.aln\
- ${output_main_dir}/6-phylogeny/All_partitions_merged_filtred_full.part\
-  --species_pair  sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG sorted_Mammuthus-FK001_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted --tag ALL_cat_
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py ${output_main_dir}/5-align/Align-GENO3_1/ ${output_main_dir}/6-phylogeny/All_partitions_merged.aln ${output_main_dir}/6-phylogeny/All_partitions_merged.part --tag ALL_cat_GENO3
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py ${output_main_dir}/5-align/Align-GENO3_1/ ${output_main_dir}/6-phylogeny/All_partitions_merged_edit0-2_minDepth2.aln ${output_main_dir}/6-phylogeny/All_partitions_merged_edit0-2_minDepth2.part --tag ALL_cat_edit0-2_minDepth2_GENO3
+
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged.aln -delete sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sortedP033_nonUDG_treated_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_clip -o All_partitions_merged.aln2
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged_edit0-2_minDepth2.aln -delete sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sortedP033_nonUDG_treated_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_clip -o All_partitions_merged_edit0-2_minDepth2.aln2
+
+mv All_partitions_merged.aln2 All_partitions_merged.aln
+mv All_partitions_merged_edit0-2_minDepth2.aln2 All_partitions_merged_edit0-2_minDepth2.aln
 # in this case we could not use Mammuthus-G.ERR2260501 and Mammuthus-MD213 as filter as they shared to less sites with the other mammuths
 
 # Update the names 
@@ -155,14 +180,28 @@ awk -F' :: ' '{print $2"="$1}' "$list_modern_genomes" | sed 's/_genomic\.fna//g'
 # Loop over each line in the mapping file
 while IFS="=" read -r gen value; do
   # Use sed to replace GENx with the corresponding value in the original file
-  sed -i "s/$gen/$value/g" All_partitions_merged*
+  sed -i "s/$gen/$value/g" All_partitions_*
 done < gene_names.txt
+
+
+#!/bin/bash
+#SBATCH -A naiss2024-22-84
+#SBATCH -p shared
+#SBATCH -n 7
+#SBATCH -t 10:00:00
+#SBATCH -e /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/Erysipelothrix_mapq30_ALL/PHYLOGENY.err
+#SBATCH -o /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/Erysipelothrix_mapq30_ALL/PHYLOGENY.out
+#SBATCH --job-name PHYLOGENY_Erysipelothrix
 
 # Run iqtree 
 module load iqtree/2.3.5-cpeGNU-23.12
 
-for file in All_partitions_merged*.aln; do
-    iqtree2 -s $file -p "${file%.aln}.part"  -m MFP --threads 7 -B 1000 -alrt 1000 
+cd cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/Erysipelothrix_mapq30_ALL/6-phylogeny
+
+echo "Done."
+rm All_partitions_merged_Sub*
+for file in All_partitions*.aln; do
+    iqtree2 -s $file -p "${file%.aln}.part"  -m MFP --threads 7 -B 1000 -alrt 1000 -redo
 done
 
 # Count the shared sites
@@ -171,22 +210,236 @@ for file in All_partitions_merged*.aln; do
 done
 
 
+
+# Phylogenetic placement analysis 
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged_edit0-2_minDepth2.aln -delete  sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG sorted_Mammuthus-FK001_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-G sorted_Mammuthus-MD213_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted -o No_mammoths_All_partitions_merged_edit0-2_minDepth2.aln
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged_edit0-2_minDepth2.aln -delete  GCF_000373785.1_ASM37378v1 GCA_036549255.1_ASM3654925v1 GCA_003931795.1_ASM393179v1 GCA_001723625.1_ASM172362v1 GCA_003226675.1_ASM322667v1 GCA_022132215.1_ASM2213221v1 GCA_900637845.1_52683_D03 GCA_035066585.1_ASM3506658v1 GCA_023650665.1_ASM2365066v1 GCA_007725185.1_ASM772518v1 GCA_003725505.1_ASM372550v1 GCA_000160815.2_ASM16081v2 GCA_947038325.1_21S01207 GCA_900448055.1_52601_C01 GCA_036620455.1_ASM3662045v1 GCF_000177375.1_ASM17737v1 GCF_014396165.1_ASM1439616v1 GCA_009828765.1_ASM982876v1 GCA_009828745.1_ASM982874v1 GCF_009828835.1_ASM982883v1 GCA_001545095.1_ASM154509v1 -o No_modern_All_partitions_merged_edit0-2_minDepth2.aln
+
+iqtree2 -s No_mammoths_All_partitions_merged_edit0-2_minDepth2.aln -p All_partitions_merged_edit0-2_minDepth2.part -m MFP --threads 14 -B 1000 -alrt 1000 --prefix No_mammoths_All_partitions_merged_edit0-2_minDepth2
+rm -f ./epa_info.log
+epa-ng -t No_mammoths_All_partitions_merged_edit0-2_minDepth2.treefile  --ref-msa No_mammoths_All_partitions_merged_edit0-2_minDepth2.aln  --query No_modern_All_partitions_merged_edit0-2_minDepth2.aln -m GTR+G
+/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/gappa/bin/gappa examine assign --jplace-path epa_result.jplace --taxon-file taxon_file.txt --per-query-results --allow-file-overwriting
+
+# Compare sequences within an ALN 
+
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Compare_seq_MSA.py All_partitions_merged.aln >> Seq_comparisons_All_partitions_merged.txt 
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Compare_seq_MSA.py All_partitions_merged_edit0-2_minDepth2.aln >> Seq_comparisons_All_partitions_merged_edit0-2_minDepth2.txt 
+
+grep "P033" Seq_comparisons_All_partitions_merged.txt 
+grep "P033" Seq_comparisons_All_partitions_merged_edit0-2_minDepth2.txt
+
+
+# PHYLETPATH ANALYSIS on minDepth2 filtered data
+
+# First rename the Tips 
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Rename_phylogeny_and_MSA.py ${output_main_dir}/Genome_metadata.csv ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2.aln ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2.treefile
+## create VCF with snp-sites from multiple sequence alignment (MSA) file ###
+snp-sites ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.aln -c -v -o ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2.vcf
+module load PDC/23.12 R/4.4.1-cpeGNU-23.12
+## Bianca’s script to change missing data coding in vcf ###
+Rscript  /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/fix_vcf.R ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2.vcf ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2_fixed.vcf
+Ref_name="Erysipelothrix_tonsillarum_DSM_14972"
+## fix naming problem in vcf file (replace 1’s with the name of the closest ref) ###
+sed "s/^1\t/${Ref_name}\t/" "${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2_fixed.vcf" > "${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2_fixed_new_name.vcf"
+
+
+## Mapping sample reads to closest ref  ###
+# first run bowtie2 to map the reads against the reference genome
+
+fastq_files=(
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-FK001_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-G.ERR2260501_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-MD213_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"	
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG.fastq.gz"
+)
+
+#extract the Bisgaard Taxon 45 aligned part 
+awk -v Ref_name="$Ref_name" '/^>/ {printit = ($0 ~ "^>"Ref_name)} printit'  No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.aln > Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.aln
+
+ref_genome_built="Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2"
+# create bowtie2 index
+bowtie2-build --quiet --threads 8 -f Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.aln ${ref_genome_built}
+
+# Mapp each mammoth fastq file to the Bisgaard taxon 45 reference genome
+for fastq_file in "${fastq_files[@]}"; do
+        fastq_basename=$(basename "$fastq_file")
+        bam_filename="${fastq_basename%.fastq.gz}_vs_${ref_genome_built}"
+        bowtie2 --very-sensitive --threads 6 -x Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2 -U "$fastq_file" | \
+            samtools view --verbosity 0 -b -F 4 -q 30 -@ 6 | \
+            samtools sort --verbosity 0 -@ 6 -O bam -o "${bam_filename}.bam"
+        # echo the full paht and name of the bam file to bam.list
+        echo "$(pwd)/${bam_filename}.bam" >> bam.list
+done 
+
+
+### Run pathPhynder ###
+
+#Edit bootstrap values 
+
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Edit_newick_bootstraps.py -input ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.treefile -output ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.treefile
+Rscript /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Root_tree.R ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.treefile  ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.treefile_rooted 
+
+
+# 1) Assign informative SNPs to tree branches
+/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/phynder -B -o branches.snp ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.treefile_rooted ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2_fixed_new_name.vcf
+# 2) Run pathPhynder to call those SNPs in a given dataset of ancient samples  and find the best path and branch where these can be mapped in the tree
+#Prepare data - this will output a bed file for calling variants and tables for pylogenetic placement
+#The -G parameter is optional and in this case adds ISOGG haplogroup information to each variant.
+module unload R/4.4.1-cpeGNU-23.12
+singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/pathPhynder/data:/data /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/pathphynder_b8532c.sif pathPhynder -s prepare -i ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.treefile_rooted  -p Pathfinder_dir -f branches.snp 
+
+# 3) Run pathPhynder best path, call variants, place samples, plot results (the -G can be used to identify haplogroups and it is optional)
+singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/pathPhynder/data:/data /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/pathphynder_b8532c.sif pathPhynder  -i ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.treefile_rooted  -p tree_data/Pathfinder_dir -l bam.list -s all -t 100 -r Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.aln
+
+#######################
+# MAximums likelihood  #
+
+#convert calls to vcf
+Rscript /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/pathPhynder/R/make_vcf.R intree_folder/ ${Ref_name} ancient_calls.vcf
+#place samples with phynder
+/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/phynder -q ancient_calls.vcf -p 0.01 -o query.phy ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_NewTipName.treefile_rooted ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2_fixed_new_name.vcf
+#plot results
+module load R/4.4.1-cpeGNU-23.12
+Rscript /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/pathPhynder/R/plot_likes.R ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2_NewTipName.treefile_rooted query.phy results_folder
+
+
+
+
+
+
+
+
+
+# PHYLETPATH ANALYSIS on  ALL data 
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged.aln -delete  sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG sorted_Mammuthus-FK001_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-G sorted_Mammuthus-MD213_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted -o No_mammoths_All_partitions_merged.aln
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged.aln -delete  GCF_000373785.1_ASM37378v1 GCA_036549255.1_ASM3654925v1 GCA_003931795.1_ASM393179v1 GCA_001723625.1_ASM172362v1 GCA_003226675.1_ASM322667v1 GCA_022132215.1_ASM2213221v1 GCA_900637845.1_52683_D03 GCA_035066585.1_ASM3506658v1 GCA_023650665.1_ASM2365066v1 GCA_007725185.1_ASM772518v1 GCA_003725505.1_ASM372550v1 GCA_000160815.2_ASM16081v2 GCA_947038325.1_21S01207 GCA_900448055.1_52601_C01 GCA_036620455.1_ASM3662045v1 GCF_000177375.1_ASM17737v1 GCF_014396165.1_ASM1439616v1 GCA_009828765.1_ASM982876v1 GCA_009828745.1_ASM982874v1 GCF_009828835.1_ASM982883v1 GCA_001545095.1_ASM154509v1 -o No_modern_All_partitions_merged.aln
+
+iqtree2 -s No_mammoths_All_partitions_merged.aln -p All_partitions_merged.part -m MFP --threads 14 -B 1000 -alrt 1000 --prefix No_mammoths_All_partitions_merged
+
+
+# First rename the Tips 
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Rename_phylogeny_and_MSA.py ${output_main_dir}/Genome_metadata.csv ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged.aln ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged.treefile
+## create VCF with snp-sites from multiple sequence alignment (MSA) file ###
+snp-sites ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_NewTipName.aln -c -v -o ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged.vcf
+module load PDC/23.12 R/4.4.1-cpeGNU-23.12
+## Bianca’s script to change missing data coding in vcf ###
+Rscript  /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/fix_vcf.R ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged.vcf ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_fixed.vcf
+Ref_name="Erysipelothrix_tonsillarum_DSM_14972"
+## fix naming problem in vcf file (replace 1’s with the name of the closest ref) ###
+sed "s/^1\t/${Ref_name}\t/" "${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_fixed.vcf" > "${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_fixed_new_name.vcf"
+
+
+## Mapping sample reads to closest ref  ###
+# first run bowtie2 to map the reads against the reference genome
+
+fastq_files=(
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-FK001_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-G.ERR2260501_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-MD213_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"	
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG.fastq.gz"
+)
+
+#extract the Bisgaard Taxon 45 aligned part 
+awk -v Ref_name="$Ref_name" '/^>/ {printit = ($0 ~ "^>"Ref_name)} printit'  No_mammoths_All_partitions_merged_NewTipName.aln > Target_REF_No_mammoths_All_partitions_merged_NewTipName.aln
+
+ref_genome_built="Target_REF_No_mammoths_All_partitions_merged"
+# create bowtie2 index
+bowtie2-build --quiet --threads 8 -f Target_REF_No_mammoths_All_partitions_merged_NewTipName.aln ${ref_genome_built}
+
+# Mapp each mammoth fastq file to the Bisgaard taxon 45 reference genome
+for fastq_file in "${fastq_files[@]}"; do
+        fastq_basename=$(basename "$fastq_file")
+        bam_filename="${fastq_basename%.fastq.gz}_vs_${ref_genome_built}"
+        bowtie2 --very-sensitive --threads 6 -x Target_REF_No_mammoths_All_partitions_merged -U "$fastq_file" | \
+            samtools view --verbosity 0 -b -F 4 -q 30 -@ 6 | \
+            samtools sort --verbosity 0 -@ 6 -O bam -o "${bam_filename}.bam"
+        # echo the full paht and name of the bam file to bam.list
+        echo "$(pwd)/${bam_filename}.bam" >> bam.list
+done 
+
+
+### Run pathPhynder ###
+
+#Edit bootstrap values 
+
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Edit_newick_bootstraps.py -input ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_NewTipName.treefile -output ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_NewTipName.treefile
+Rscript /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Root_tree.R ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_NewTipName.treefile  ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_NewTipName.treefile_rooted 
+
+
+# 1) Assign informative SNPs to tree branches
+/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/phynder -B -o branches.snp ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_NewTipName.treefile_rooted ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_fixed_new_name.vcf
+# 2) Run pathPhynder to call those SNPs in a given dataset of ancient samples  and find the best path and branch where these can be mapped in the tree
+#Prepare data - this will output a bed file for calling variants and tables for pylogenetic placement
+#The -G parameter is optional and in this case adds ISOGG haplogroup information to each variant.
+module unload R/4.4.1-cpeGNU-23.12
+singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/pathPhynder/data:/data /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/pathphynder_b8532c.sif pathPhynder -s prepare -i ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_NewTipName.treefile_rooted  -p Pathfinder_dir -f branches.snp 
+
+# 3) Run pathPhynder best path, call variants, place samples, plot results (the -G can be used to identify haplogroups and it is optional)
+singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/pathPhynder/data:/data /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/pathphynder_b8532c.sif pathPhynder  -i ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_NewTipName.treefile_rooted  -p tree_data/Pathfinder_dir -l bam.list -s all -t 100 -r Target_REF_No_mammoths_All_partitions_merged_NewTipName.aln
+
+#######################
+# MAximums likelihood  #
+
+#convert calls to vcf
+Rscript /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/pathPhynder/R/make_vcf.R intree_folder/ ${Ref_name} ancient_calls.vcf
+
+#place samples with phynder
+/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/phynder -q ancient_calls.vcf -p 0.01 -o query.phy ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_NewTipName.treefile_rooted ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_fixed_new_name.vcf
+
+#plot results
+module load R/4.4.1-cpeGNU-23.12
+Rscript /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/pathPhynder/R/plot_likes.R ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_NewTipName.treefile_rooted query.phy results_folder
+
+
+
+
+
+
+
+
+
+mkdir Best_paths
+
+
+cp /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/Erysipelothrix_mapq30_ALL/6-phylogeny/results_folder/sorted_Mammuthus-FK001_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_vs_Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2.bam.best_path.pdf Best_paths
+cp /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/Erysipelothrix_mapq30_ALL/6-phylogeny/results_folder/sorted_Mammuthus-G.ERR2260501_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_vs_Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2.bam.best_path.pdf Best_paths
+cp /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/Erysipelothrix_mapq30_ALL/6-phylogeny/results_folder/sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_vs_Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2.bam.best_path.pdf Best_paths
+cp /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/Erysipelothrix_mapq30_ALL/6-phylogeny/results_folder/sorted_Mammuthus-MD213_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_vs_Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2.bam.best_path.pdf Best_paths
+cp /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/Erysipelothrix_mapq30_ALL/6-phylogeny/results_folder/sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG_vs_Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2.bam.best_path.pdf Best_paths
+
+
+
+
+
+
 # compute individual phylogenies
 
 # first create the sub files in order to keep the partitions and  remove the N sites in the targeted species
 python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Extract_sequences_from_MSA2.py -o .\
-    --species sorted_Mammuthus-FK001_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-G sorted_Mammuthus-MD213_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sortedP033_nonUDG_treated_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_clip sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted\
-     --alignment_dir /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/Erysipelothrix/5-align/Align-GENO3_1/
+    --species sorted_Mammuthus-FK001_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-G.ERR2260501_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-MD213_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted\
+     --alignment_dir /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_pannacota/Erysipelothrix_mapq30_ALL/5-align/Align-GENO3_1/
 
-sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted
-sortedP033_nonUDG_treated_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_clip
 # Now we will merge all these files 
 python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py . All_partitions_merged_Sub_sorted_Mammuthus-FK001.aln All_partitions_merged_Sub_sorted_Mammuthus-FK001.part --tag  Sub_sorted_Mammuthus-FK001
 python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py . All_partitions_merged_Sub_sorted_Mammuthus-G.aln All_partitions_merged_Sub_sorted_Mammuthus-G.part  --tag  Sub_sorted_Mammuthus-G
 python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py . All_partitions_merged_Sub_sorted_Mammuthus-MD213.aln All_partitions_merged_Sub_sorted_Mammuthus-MD213.part  --tag  Sub_sorted_Mammuthus-MD213
-python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py . All_partitions_merged_Sub_sorted_sortedP033_nonUDG_treated.aln All_partitions_merged_Sub_sorted_sortedP033_nonUDG_treated.part  --tag  Sub_sorted_sortedP033_nonUDG_treated
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py . All_partitions_merged_Sub_sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG.aln All_partitions_merged_Sub_sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG.part  --tag  Sub_sorted_Mammuthus-P033
 python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py . All_partitions_merged_Sub_sorted_Mammuthus-MD024.aln All_partitions_merged_Sub_sorted_Mammuthus-MD024.part  --tag  Sub_sorted_Mammuthus-MD024
-python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Merge_genes_to_MSA.py . All_partitions_merged_Sub_sorted_Mammuthus-P033.aln All_partitions_merged_Sub_sorted_Mammuthus-P033.part  --tag  Sub_sorted_Mammuthus-P033
+
+
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged_Sub_sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG.aln -delete sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sortedP033_nonUDG_treated_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_clip -o All_partitions_merged_Sub_sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG.aln2
+mv All_partitions_merged_Sub_sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG.aln2 All_partitions_merged_Sub_sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG.aln
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged_Sub_sorted_Mammuthus-MD024.aln -delete sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sortedP033_nonUDG_treated_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_clip  -o All_partitions_merged_Sub_sorted_Mammuthus-MD024.aln2
+mv All_partitions_merged_Sub_sorted_Mammuthus-MD024.aln2 All_partitions_merged_Sub_sorted_Mammuthus-MD024.aln
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged_Sub_sorted_Mammuthus-MD213.aln -delete sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sortedP033_nonUDG_treated_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_clip -o All_partitions_merged_Sub_sorted_Mammuthus-MD213.aln2
+mv All_partitions_merged_Sub_sorted_Mammuthus-MD213.aln2 All_partitions_merged_Sub_sorted_Mammuthus-MD213.aln
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged_Sub_sorted_Mammuthus-G.aln -delete sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sortedP033_nonUDG_treated_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_clip -o All_partitions_merged_Sub_sorted_Mammuthus-G.aln2
+mv All_partitions_merged_Sub_sorted_Mammuthus-G.aln2 All_partitions_merged_Sub_sorted_Mammuthus-G.aln
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged_Sub_sorted_Mammuthus-FK001.aln -delete sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sortedP033_nonUDG_treated_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_clip -o All_partitions_merged_Sub_sorted_Mammuthus-FK001.aln2
+mv All_partitions_merged_Sub_sorted_Mammuthus-FK001.aln2 All_partitions_merged_Sub_sorted_Mammuthus-FK001.aln
+
 
 while IFS="=" read -r gen value; do
   # Use sed to replace GENx with the corresponding value in the original file
@@ -194,8 +447,95 @@ while IFS="=" read -r gen value; do
 done < gene_names.txt
 
 # remove useless files
-rm Sub_sorted*
+rm Sub*
 
 for file in All_partitions_merged_Sub*.aln; do
     iqtree2 -s $file -p "${file%.aln}.part"  -m MFP --threads 7 -B 1000 -alrt 1000 
 done
+
+
+
+
+# first run bowtie2 to map the reads against the reference genome
+
+fastq_files=(
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-FK001_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-G.ERR2260501_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-MD213_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted.fastq.gz"	
+    "/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/Meta_mammuth_project/Test_folder/Output_ali_and_phylo_animals/Erysipelothrix/sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG.fastq.gz"
+)
+
+#extract the Bisgaard Taxon 45 aligned part 
+awk '/^>/ {printit = ($0 ~ /^>GCA_900637845.1_52683_D03/)} printit' No_mammoths_All_partitions_merged_edit0-2_minDepth2.aln > Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2.aln
+
+ref_genome_built="Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2"
+# create bowtie2 index
+bowtie2-build --quiet --threads 8 -f Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2.aln ${ref_genome_built}
+
+# Mapp each mammoth fastq file to the Bisgaard taxon 45 reference genome
+for fastq_file in "${fastq_files[@]}"; do
+        fastq_basename=$(basename "$fastq_file")
+        bam_filename="${fastq_basename%.fastq.gz}_vs_${ref_genome_built}"
+        bowtie2 --very-sensitive --threads 6 -x Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2 -U "$fastq_file" | \
+            samtools view --verbosity 0 -b -F 4 -q 30 -@ 6 | \
+            samtools sort --verbosity 0 -@ 6 -O bam -o "${bam_filename}.bam"
+        # echo the full paht and name of the bam file to bam.list
+        echo "$(pwd)/${bam_filename}.bam" >> bam.list
+done 
+
+
+## convert the MSA used to build the all tree without the mammoth to vcf
+snp-sites ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2.aln -v >> ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2.vcf
+
+#Edit bootstrap values 
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Edit_newick_bootstraps.py -input ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2.treefile -output ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2.treefile
+
+# 1) Assign SNPs to branches of the tree 
+/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/phynder -B -o branches.snp ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2.treefile ${output_main_dir}/6-phylogeny/No_mammoths_All_partitions_merged_edit0-2_minDepth2.vcf
+
+# 2) Prepare sites (writes bed files for variant calling and other files for phylogenetic placement).
+#The -G parameter is optional and in this case adds ISOGG haplogroup information to each variant.
+singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/pathPhynder/data:/data /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/pathphynder_b8532c.sif pathPhynder -s prepare -i ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2.treefile -p Pasteurella_test -f branches.snp 
+
+# We need to change the name of the bed file to fit the one of the ref 
+ref_name=$(grep ">" Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2.aln | sed 's/>//g')
+sed -i "s/^1\>/$ref_name/" tree_data/Pasteurella_test.sites.bed
+
+
+# 3) Run pathPhynder best path, call variants, place samples, plot results (the -G can be used to identify haplogroups and it is optional)
+singularity exec -B /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/phynder/pathPhynder/data:/data /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/pathphynder_b8532c.sif pathPhynder  -i ${output_main_dir}/6-phylogeny/Bootstrap_edited_No_mammoths_All_partitions_merged_edit0-2_minDepth2.treefile -p tree_data/Pasteurella_test -l bam.list -s all -t 100 -r Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2.aln
+
+
+
+
+/sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_vs_Target_REF_No_mammoths_All_partitions_merged_edit0-2_minDepth2.bam
+
+
+
+# Phylogenetic placement analysis 
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged_edit0-2_minDepth2.aln -delete  sorted_Mammuthus-MD024_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG sorted_Mammuthus-FK001_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted sorted_Mammuthus-G sorted_Mammuthus-MD213_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted -o No_mammoths_All_partitions_merged_filtred_edit0-2.aln
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Remove_seq_from_MSA.py All_partitions_merged_edit0-2_minDepth2.aln -delete  GCA_036549255.1_ASM3654925v1 GCF_000373785.1_ASM37378v1 GCA_003226675.1_ASM322667v1 GCA_022132215.1_ASM2213221v1 GCA_035066585.1_ASM3506658v1 GCA_003931795.1_ASM393179v1 GCA_001723625.1_ASM172362v1 GCA_900637845.1_52683_D03 -o No_modern_All_partitions_merged_filtred_edit0-2.aln
+
+iqtree2 -s No_mammoths_All_partitions_merged_filtred_edit0-2.aln -p All_partitions_merged_filtred_edit0-2.part -m MFP --threads 7 -B 1000 -alrt 1000 --prefix No_mammoths_All_partitions_merged_filtred_edit0-2
+rm -f ./epa_info.log
+epa-ng -t No_mammoths_All_partitions_merged_filtred_edit0-2.treefile  --ref-msa No_mammoths_All_partitions_merged_filtred_edit0-2.aln  --query No_modern_All_partitions_merged_filtred_edit0-2.aln -m GTR+G
+/cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/gappa/bin/gappa examine assign --jplace-path epa_result.jplace --taxon-file taxon_file.txt --per-query-results --allow-file-overwriting
+
+
+
+
+
+# Plot edit distance and read length distribution
+mkdir 7-plots
+cd 7-plots
+
+samtools merge -@ 8 Erysipelothrix_Mammuthus-FK001.bam ../5-align/All_mapped_reads/sorted_Mammuthus-FK001*sorted.bam
+samtools merge -@ 8 Erysipelothrix_Mammuthus-MD024.bam ../5-align/All_mapped_reads/sorted_Mammuthus-MD024*sorted.bam
+samtools merge -@ 8 Erysipelothrix_Mammuthus-P033.bam ../5-align/All_mapped_reads/sorted_Mammuthus-P033_Erysipelothrix_tonsillarum_ZKselpDrZ__extracted_merged_P033_nonUDG_vs_Isolated_GENO3*_sorted.bam
+samtools merge -@ 8 Erysipelothrix_Mammuthus-G.bam ../5-align/All_mapped_reads/sorted_Mammuthus-G*sorted.bam
+samtools merge -@ 8 Erysipelothrix_Mammuthus-MD213.bam ../5-align/All_mapped_reads/sorted_Mammuthus-MD213*sorted.bam
+
+
+python3 /cfs/klemming/projects/supr/snic2022-6-144/BENJAMIN/TOOLS/Plot_edit_distance_and_percidentity3.py --bam_files Erysipelothrix_Mammuthus-FK001.bam Erysipelothrix_Mammuthus-MD024.bam Erysipelothrix_Mammuthus-P033.bam Erysipelothrix_Mammuthus-G.bam Erysipelothrix_Mammuthus-MD213.bam --out Erysipelothrix_read_stats.pdf
+
